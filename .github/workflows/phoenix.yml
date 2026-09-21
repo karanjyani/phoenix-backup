@@ -2,7 +2,14 @@ name: phoenix
 on:
   schedule:
     - cron: "0 */6 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      restore_from:
+        description: "VAULT id to restore from (leave empty normally)"
+        default: ""
+      restore_to:
+        description: "NEW group id to restore into (leave empty normally)"
+        default: ""
 concurrency:
   group: phoenix
   cancel-in-progress: false
@@ -21,6 +28,11 @@ jobs:
           TG_SESSION: ${{ secrets.TG_SESSION }}
           SHIELD_BUDGET: "20400"
         run: |
-          python phoenix.py --setup
-          python phoenix.py --sync
-          python phoenix.py --shield
+          if [ -n "${{ github.event.inputs.restore_from }}" ]; then
+            python phoenix.py --restore "${{ github.event.inputs.restore_from }}" "${{ github.event.inputs.restore_to }}"
+          else
+            python phoenix.py --setup
+            python phoenix.py --sync
+            python phoenix.py --guard
+            python phoenix.py --shield
+          fi
