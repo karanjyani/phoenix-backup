@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-PHOENIX v2.2 — immortal, order-perfect, copyright-shielded Telegram backups.
+PHOENIX v2.3 — immortal, order-perfect, copyright-shielded Telegram backups.
 Zero media ever stored on your device. Runs fully automated on GitHub Actions.
-Auto-twins every owned group/channel, auto-shields fingerprints,
-auto-resurrects banned mains, auto-retires ghost groups, self-heals vaults.
+v2.3: state marker fixed (no leading space), vaults deduplicated by name.
 """
 import asyncio, json, os, random, shutil, subprocess, sys, tempfile, time
 from telethon import TelegramClient, functions
@@ -15,7 +14,7 @@ API_HASH = os.environ.get("TG_API_HASH", "").strip()
 SESSION  = os.environ.get("TG_SESSION", "").strip()
 SHIELD_BUDGET_SECONDS = int(os.environ.get("SHIELD_BUDGET", 4 * 3600))
 
-MARK = " PHOENIX STATE v1"
+MARK = "PHOENIX STATE v1"
 RUN_START = time.time()
 client = TelegramClient(StringSession(SESSION) if SESSION else "phoenix_session", API_ID, API_HASH)
 
@@ -40,9 +39,10 @@ def topic_of(m):
     return None
 
 async def load_state():
-    async for m in client.iter_messages("me", limit=20):
-        if m.text and m.text.startswith(MARK):
-            return json.loads(m.text[len(MARK):]), m.id
+    async for m in client.iter_messages("me", limit=30):
+        t = (m.text or "").strip()
+        if t.startswith(MARK):
+            return json.loads(t[len(MARK):]), m.id
     return {"pairs": {}, "last": {}}, None
 
 async def save_state(st, mid):
@@ -260,17 +260,26 @@ async def guard(st):
             log(f"🐦 PHOENIX COMPLETE: {title} lives again as {new_id}; vault still hidden.")
 
 async def setup(st):
+    existing = {}
+    async for d2 in client.iter_dialogs():
+        if d2.title and d2.title.startswith("VAULT · "):
+            existing.setdefault(d2.title[8:], d2.id)
     async for d in client.iter_dialogs():
         ent = d.entity
         if not (d.is_group or d.is_channel) or not getattr(ent, "creator", False): continue
         if d.is_group and not getattr(ent, "megagroup", False): continue
         if getattr(ent, "deactivated", False): continue
         if str(d.id) in st["pairs"] or d.title.startswith("VAULT"): continue
-        r = await retry(lambda: client(functions.channels.CreateChannelRequest(title=f"VAULT · {d.title}", about="private backup", megagroup=True)))
-        v = r.chats[0]
+        vid = existing.get(d.title)
+        if vid:
+            v = await client.get_entity(vid)
+            log(f"🏦 VAULT reused: {v.id}  for  {d.title}")
+        else:
+            r = await retry(lambda: client(functions.channels.CreateChannelRequest(title=f"VAULT · {d.title}", about="private backup", megagroup=True)))
+            v = r.chats[0]
+            log(f"🏦 VAULT created: {v.id}  for  {d.title}")
         await forum_on(v); await noforwards(v, True)
         st["pairs"][str(d.id)] = {"vault": v.id, "title": d.title, "kind": "group" if d.is_group else "channel"}
-        log(f"🏦 VAULT created: {v.id}  for  {d.title}")
 
 async def main():
     await client.start()
