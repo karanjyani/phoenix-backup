@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-PHOENIX v1.0 — immortal, order-perfect, copyright-shielded Telegram backups.
+PHOENIX v2.0 — immortal, order-perfect, copyright-shielded Telegram backups.
 Zero media ever stored on your device. Runs fully automated on GitHub Actions.
+v2 adds AUTO-RESURRECTION: if a main dies, Phoenix raises a same-named
+replacement refilled from the Vault with brand-new fingerprints. No human needed.
 """
 import asyncio, json, os, random, shutil, subprocess, sys, tempfile, time
 from telethon import TelegramClient, functions
@@ -10,13 +12,16 @@ from telethon.errors import FloodWaitError, ServerError
 
 API_ID   = int(os.environ.get("TG_API_ID", "0"))
 API_HASH = os.environ.get("TG_API_HASH", "")
-SESSION  = os.environ.get("TG_SESSION", "")          # string session (cloud). Empty = local login.
-SHIELD_BUDGET_SECONDS = int(os.environ.get("SHIELD_BUDGET", 4 * 3600))  # per-run time cap
+SESSION  = os.environ.get("TG_SESSION", "")
+SHIELD_BUDGET_SECONDS = int(os.environ.get("SHIELD_BUDGET", 4 * 3600))
 
 MARK = " PHOENIX STATE v1"
+RUN_START = time.time()
 client = TelegramClient(StringSession(SESSION) if SESSION else "phoenix_session", API_ID, API_HASH)
 
 def log(*a): print(*a, flush=True)
+def vault_of(p): return p["vault"] if isinstance(p, dict) else p
+def budget_left(): return SHIELD_BUDGET_SECONDS - (time.time() - RUN_START)
 
 async def retry(factory, tries=6):
     for i in range(tries):
@@ -34,7 +39,6 @@ def topic_of(m):
         return r.reply_to_top_id or r.reply_to_msg_id
     return None
 
-# ---------- state (lives in your own Saved Messages => no local files) ----------
 async def load_state():
     async for m in client.iter_messages("me", limit=20):
         if m.text and m.text.startswith(MARK):
@@ -46,7 +50,6 @@ async def save_state(st, mid):
     if mid: await client.edit_message("me", mid, txt)
     else:   await client.send_message("me", txt)
 
-# ---------- protections ----------
 async def noforwards(peer, on):
     try: await retry(lambda: client(functions.channels.ToggleNoForwardsRequest(channel=peer, enabled=on)))
     except Exception as e: log("  ! toggle 'restrict saving' manually:", e)
@@ -69,7 +72,6 @@ async def topic_id_by_title(peer, title):
         if t == title: return tid
     return None
 
-# ---------- core: order-perfect forwarding ----------
 async def flush(src, dst, dst_tid, ids):
     for i in range(0, len(ids), 100):
         ch = ids[i:i+100]
@@ -84,10 +86,10 @@ async def sync_pair(src, vault, st):
     titles = await topics_map(src)
     last = st["last"].get(str(src.id), 0)
     log(f"SYNC {src.title} -> {vault.title} (new messages after id {last})")
-    await noforwards(src, False)                       # unlock source so forwarding is allowed
+    await noforwards(src, False)
     try:
         buffers, new_last = {}, last
-        async for m in client.iter_messages(src, min_id=last, reverse=True):   # OLDEST -> NEWEST = exact sequence
+        async for m in client.iter_messages(src, min_id=last, reverse=True):
             new_last = max(new_last, m.id)
             if m.service: continue
             tid = topic_of(m)
@@ -104,9 +106,8 @@ async def sync_pair(src, vault, st):
             if v: await flush(src, vault, st["topics_" + str(src.id)].get(k), v)
         st["last"][str(src.id)] = new_last
     finally:
-        await noforwards(src, True)                    # re-lock source group
+        await noforwards(src, True)
 
-# ---------- shield: rebirth files with NEW fingerprints (temp disk only) ----------
 def rebirth(inp, out):
     ext = os.path.splitext(inp)[1].lower()
     if ext in (".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".mp3", ".m4a", ".ogg", ".opus"):
@@ -119,7 +120,7 @@ def rebirth(inp, out):
         with open(inp, "rb") as a, open(out, "wb") as b:
             shutil.copyfileobj(a, b); b.write(b"\n%phoenix-" + str(random.getrandbits(32)).encode() + b"\n")
         return True
-    return False   # archives (zip/rar) stay forward-only; noted honestly
+    return False
 
 async def shield_pair(vault):
     vault = await client.get_entity(vault)
@@ -128,28 +129,29 @@ async def shield_pair(vault):
         if m.service: continue
         if m.fwd_from: orig.append(m)
         elif m.reply_to: shielded.add(m.reply_to.reply_to_msg_id)
-    todo = [m for m in reversed(orig) if m.id not in shielded and m.media]   # oldest first
+    todo = [m for m in reversed(orig) if m.id not in shielded and m.media]
     if not todo: log(f"SHIELD {vault.title}: fully shielded ✅"); return
-    t0 = time.time(); done = 0
+    done = 0
     tmp = tempfile.mkdtemp(prefix="phoenix_")
     try:
         for m in todo:
-            if time.time() - t0 > SHIELD_BUDGET_SECONDS:
-                log("  time budget reached, resumes tomorrow."); break
+            if budget_left() <= 0:
+                log("  time budget reached, resumes next shift."); break
             name = (m.file.name or "media.bin") if m.file else "media.bin"
             inp, out = os.path.join(tmp, "in_" + name), os.path.join(tmp, "out_" + name)
-            await retry(lambda: client.download_media(m, inp))               # streams to TEMP only
+            await retry(lambda: client.download_media(m, inp))
             if not rebirth(inp, out):
                 log(f"  skip (unsupported type): {name}"); continue
             await retry(lambda: client.send_file(vault, out, caption=m.text,
                           reply_to=m.id, supports_streaming=True, silent=True))
-            os.remove(inp); os.remove(out); done += 1
+            try: os.remove(inp); os.remove(out)
+            except OSError: pass
+            done += 1
             log(f"  🔥 reborn [{done}]: {name}")
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)        # temp disk wiped. always.
+        shutil.rmtree(tmp, ignore_errors=True)
     log(f"SHIELD {vault.title}: {done} files reborn this run")
 
-# ---------- restore: the phoenix button (REBORN edition) ----------
 async def get_or_create_topic(peer, title):
     if title == "General": return None
     tid = await topic_id_by_title(peer, title)
@@ -175,17 +177,18 @@ async def restore(vault_id, new_id):
     todo = orig[have:]
     log(f"RESTORE {vault.title} -> {new.title}: {len(todo)} messages to go")
     if not todo:
-        log("✅ restore already complete for this group."); return
+        log("✅ restore already complete for this group.")
+        return True
     vtopics = await topics_map(vault)
     await noforwards(vault, False)
-    t0 = time.time(); done = 0
+    done = 0; complete = True
     tmp = tempfile.mkdtemp(prefix="phoenix_restore_")
     cache = {}
     try:
         for m in todo:
-            if time.time() - t0 > SHIELD_BUDGET_SECONDS:
-                log("  ⏳ budget reached — press Run workflow AGAIN with the same two ids to continue.")
-                break
+            if budget_left() <= 0:
+                log("  ⏳ budget reached — run again to continue (it resumes).")
+                complete = False; break
             title = vtopics.get(topic_of(m), "General")
             if title not in cache: cache[title] = await get_or_create_topic(new, title)
             dst_tid = cache[title]
@@ -215,8 +218,42 @@ async def restore(vault_id, new_id):
         shutil.rmtree(tmp, ignore_errors=True)
         await noforwards(vault, True)
     log(f"✅ RESTORED {done} messages into {new.title} — brand-new fingerprints, exact order.")
+    return complete
 
-# ---------- setup & misc ----------
+async def guard(st):
+    for src in list(st["pairs"].keys()):
+        p = st["pairs"][src]
+        p = p if isinstance(p, dict) else {"vault": p}
+        try:
+            await client.get_entity(int(p["vault"]))
+        except Exception:
+            log(f"  vault for {src} is gone — retiring pair."); del st["pairs"][src]; continue
+        alive = True
+        try:
+            e = await client.get_entity(int(src))
+        except Exception:
+            alive = False
+        if alive:
+            if isinstance(st["pairs"][src], int):
+                st["pairs"][src] = {"vault": p["vault"], "title": e.title,
+                                    "kind": "group" if getattr(e, "megagroup", False) else "channel"}
+            continue
+        title = p.get("title") or f"Restored {src}"
+        kind = p.get("kind", "channel")
+        new_id = st.setdefault("resurrect", {}).get(src)
+        if not new_id:
+            r = await retry(lambda: client(functions.channels.CreateChannelRequest(
+                title=title, megagroup=(kind == "group"), broadcast=(kind == "channel"))))
+            new_id = r.chats[0].id
+            st["resurrect"][src] = new_id
+            log(f"⚠️ MAIN GONE: {title} — raising phoenix {new_id}")
+        complete = await restore(p["vault"], new_id)
+        if complete:
+            st["pairs"][str(new_id)] = {"vault": p["vault"], "title": title, "kind": kind}
+            del st["pairs"][src]
+            st["resurrect"].pop(src, None)
+            log(f"🐦 PHOENIX COMPLETE: {title} lives again as {new_id}; vault still hidden.")
+
 async def setup(st):
     async for d in client.iter_dialogs():
         ent = d.entity
@@ -225,7 +262,7 @@ async def setup(st):
         r = await retry(lambda: client(functions.channels.CreateChannelRequest(title=f"VAULT · {d.title}", broadcast=True)))
         v = r.chats[0]
         await forum_on(v); await noforwards(v, True)
-        st["pairs"][str(d.id)] = v.id
+        st["pairs"][str(d.id)] = {"vault": v.id, "title": d.title, "kind": "group" if d.is_group else "channel"}
         log(f"🏦 VAULT created: {v.id}  for  {d.title}")
 
 async def main():
@@ -239,13 +276,15 @@ async def main():
     if mode == "--setup":
         await setup(st)
     elif mode == "--sync":
-        for s, v in list(st["pairs"].items()):
-            try: await sync_pair(int(s), v, st)
+        for s, p in list(st["pairs"].items()):
+            try: await sync_pair(int(s), vault_of(p), st)
             except Exception as e: log(f"  ! skipping pair {s}: {e}")
+    elif mode == "--guard":
+        await guard(st)
     elif mode == "--shield":
-        for v in list(st["pairs"].values()):
-            try: await shield_pair(v)
-            except Exception as e: log(f"  ! skipping vault {v}: {e}")
+        for p in list(st["pairs"].values()):
+            try: await shield_pair(vault_of(p))
+            except Exception as e: log(f"  ! skipping vault {p}: {e}")
     elif mode == "--restore":
         await restore(sys.argv[2], sys.argv[3])
     await save_state(st, mid)
