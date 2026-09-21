@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-PHOENIX v2.0 — immortal, order-perfect, copyright-shielded Telegram backups.
+PHOENIX v2.1 — immortal, order-perfect, copyright-shielded Telegram backups.
 Zero media ever stored on your device. Runs fully automated on GitHub Actions.
-v2 adds AUTO-RESURRECTION: if a main dies, Phoenix raises a same-named
-replacement refilled from the Vault with brand-new fingerprints. No human needed.
+Auto-twins every owned group/channel, auto-shields fingerprints,
+auto-resurrects banned mains. Final edition.
 """
 import asyncio, json, os, random, shutil, subprocess, sys, tempfile, time
 from telethon import TelegramClient, functions
@@ -244,7 +244,7 @@ async def guard(st):
         new_id = st.setdefault("resurrect", {}).get(src)
         if not new_id:
             r = await retry(lambda: client(functions.channels.CreateChannelRequest(
-                title=title, megagroup=(kind == "group"), broadcast=(kind == "channel"))))
+                title=title, about="private backup", megagroup=(kind == "group"), broadcast=(kind == "channel"))))
             new_id = r.chats[0].id
             st["resurrect"][src] = new_id
             log(f"⚠️ MAIN GONE: {title} — raising phoenix {new_id}")
@@ -263,7 +263,7 @@ async def setup(st):
         ent = d.entity
         if not (d.is_group or d.is_channel) or not getattr(ent, "creator", False): continue
         if str(d.id) in st["pairs"] or d.title.startswith("VAULT"): continue
-        r = await retry(lambda: client(functions.channels.CreateChannelRequest(title=f"VAULT · {d.title}", broadcast=True)))
+        r = await retry(lambda: client(functions.channels.CreateChannelRequest(title=f"VAULT · {d.title}", about="private backup", megagroup=True)))
         v = r.chats[0]
         await forum_on(v); await noforwards(v, True)
         st["pairs"][str(d.id)] = {"vault": v.id, "title": d.title, "kind": "group" if d.is_group else "channel"}
