@@ -11,8 +11,8 @@ from telethon.sessions import StringSession
 from telethon.errors import FloodWaitError, ServerError
 
 API_ID   = int(os.environ.get("TG_API_ID", "0"))
-API_HASH = os.environ.get("TG_API_HASH", "")
-SESSION  = os.environ.get("TG_SESSION", "")
+API_HASH = os.environ.get("TG_API_HASH", "").strip()
+SESSION  = os.environ.get("TG_SESSION", "").strip()
 SHIELD_BUDGET_SECONDS = int(os.environ.get("SHIELD_BUDGET", 4 * 3600))
 
 MARK = " PHOENIX STATE v1"
@@ -193,6 +193,7 @@ async def restore(vault_id, new_id):
             if title not in cache: cache[title] = await get_or_create_topic(new, title)
             dst_tid = cache[title]
             src = await client.get_messages(vault, ids=shield_map.get(m.id, m.id))
+            if src is None: src = m
             try:
                 if src.media and src.file:
                     name = src.file.name or "media.bin"
@@ -247,7 +248,10 @@ async def guard(st):
             new_id = r.chats[0].id
             st["resurrect"][src] = new_id
             log(f"⚠️ MAIN GONE: {title} — raising phoenix {new_id}")
-        complete = await restore(p["vault"], new_id)
+        try:
+            complete = await restore(p["vault"], new_id)
+        except Exception as e:
+            log(f"  ! resurrection hit a problem: {e} — retrying next shift"); continue
         if complete:
             st["pairs"][str(new_id)] = {"vault": p["vault"], "title": title, "kind": kind}
             del st["pairs"][src]
