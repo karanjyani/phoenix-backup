@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-PHOENIX v2.1 — immortal, order-perfect, copyright-shielded Telegram backups.
+PHOENIX v2.2 — immortal, order-perfect, copyright-shielded Telegram backups.
 Zero media ever stored on your device. Runs fully automated on GitHub Actions.
 Auto-twins every owned group/channel, auto-shields fingerprints,
-auto-resurrects banned mains. Final edition.
+auto-resurrects banned mains, auto-retires ghost groups, self-heals vaults.
 """
 import asyncio, json, os, random, shutil, subprocess, sys, tempfile, time
 from telethon import TelegramClient, functions
@@ -83,6 +83,7 @@ async def flush(src, dst, dst_tid, ids):
 
 async def sync_pair(src, vault, st):
     src, vault = await client.get_entity(src), await client.get_entity(vault)
+    await forum_on(vault)
     titles = await topics_map(src)
     last = st["last"].get(str(src.id), 0)
     log(f"SYNC {src.title} -> {vault.title} (new messages after id {last})")
@@ -262,6 +263,8 @@ async def setup(st):
     async for d in client.iter_dialogs():
         ent = d.entity
         if not (d.is_group or d.is_channel) or not getattr(ent, "creator", False): continue
+        if d.is_group and not getattr(ent, "megagroup", False): continue
+        if getattr(ent, "deactivated", False): continue
         if str(d.id) in st["pairs"] or d.title.startswith("VAULT"): continue
         r = await retry(lambda: client(functions.channels.CreateChannelRequest(title=f"VAULT · {d.title}", about="private backup", megagroup=True)))
         v = r.chats[0]
@@ -281,8 +284,13 @@ async def main():
         await setup(st)
     elif mode == "--sync":
         for s, p in list(st["pairs"].items()):
-            try: await sync_pair(int(s), vault_of(p), st)
-            except Exception as e: log(f"  ! skipping pair {s}: {e}")
+            try:
+                e = await client.get_entity(int(s))
+                if not (getattr(e, "megagroup", False) or getattr(e, "broadcast", False)):
+                    log(f"  retiring old basic-group pair {s}"); del st["pairs"][s]; continue
+                await sync_pair(int(s), vault_of(p), st)
+            except Exception as ex:
+                log(f"  ! skipping pair {s}: {ex}")
     elif mode == "--guard":
         await guard(st)
     elif mode == "--shield":
