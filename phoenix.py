@@ -149,36 +149,72 @@ async def shield_pair(vault):
         shutil.rmtree(tmp, ignore_errors=True)        # temp disk wiped. always.
     log(f"SHIELD {vault.title}: {done} files reborn this run")
 
-# ---------- restore: the phoenix button ----------
+# ---------- restore: the phoenix button (REBORN edition) ----------
+async def get_or_create_topic(peer, title):
+    if title == "General": return None
+    tid = await topic_id_by_title(peer, title)
+    if tid: return tid
+    await retry(lambda: client(functions.channels.CreateForumTopicRequest(
+        channel=peer, title=title, random_id=random.getrandbits(64))))
+    return await topic_id_by_title(peer, title)
+
 async def restore(vault_id, new_id):
     vault = await client.get_entity(int(vault_id))
     new = await client.get_entity(int(new_id))
     await forum_on(new)
+    await noforwards(new, True)
     shield_map, orig = {}, []
     async for m in client.iter_messages(vault):
         if m.service: continue
         if m.fwd_from: orig.append(m)
         elif m.reply_to: shield_map[m.reply_to.reply_to_msg_id] = m.id
+    orig = list(reversed(orig))
+    have = 0
+    async for m in client.iter_messages(new):
+        if not m.service: have += 1
+    todo = orig[have:]
+    log(f"RESTORE {vault.title} -> {new.title}: {len(todo)} messages to go")
+    if not todo:
+        log("✅ restore already complete for this group."); return
     vtopics = await topics_map(vault)
     await noforwards(vault, False)
+    t0 = time.time(); done = 0
+    tmp = tempfile.mkdtemp(prefix="phoenix_restore_")
+    cache = {}
     try:
-        buffers, cache = {}, {}
-        for m in reversed(orig):                                        # oldest -> newest = exact sequence
-            tid = topic_of(m); key = str(tid); title = vtopics.get(tid, "General")
-            if key not in cache:
-                if tid:
-                    await retry(lambda: client(functions.channels.CreateForumTopicRequest(
-                        channel=new, title=title, random_id=random.getrandbits(64))))
-                    cache[key] = await topic_id_by_title(new, title)
-                else: cache[key] = None
-            buffers.setdefault(key, []).append(shield_map.get(m.id, m.id))
-            if len(buffers[key]) >= 100:
-                await flush(vault, new, cache[key], buffers.pop(key))
-        for k, v in buffers.items():
-            if v: await flush(vault, new, cache[k], v)
+        for m in todo:
+            if time.time() - t0 > SHIELD_BUDGET_SECONDS:
+                log("  ⏳ budget reached — press Run workflow AGAIN with the same two ids to continue.")
+                break
+            title = vtopics.get(topic_of(m), "General")
+            if title not in cache: cache[title] = await get_or_create_topic(new, title)
+            dst_tid = cache[title]
+            src = await client.get_messages(vault, ids=shield_map.get(m.id, m.id))
+            try:
+                if src.media and src.file:
+                    name = src.file.name or "media.bin"
+                    inp = os.path.join(tmp, "in_" + name); out = os.path.join(tmp, "out_" + name)
+                    await retry(lambda: client.download_media(src, inp))
+                    if rebirth(inp, out):
+                        await retry(lambda: client.send_file(new, out, caption=src.text,
+                                      reply_to=dst_tid, supports_streaming=True, silent=True))
+                    else:
+                        await flush(vault, new, dst_tid, [src.id])
+                    try: os.remove(inp); os.remove(out)
+                    except OSError: pass
+                else:
+                    await retry(lambda: client.send_message(new, src.text or "",
+                                      reply_to=dst_tid, silent=True))
+            except Exception as e:
+                log(f"  ! trouble on message {m.id}: {e} — placeholder placed to keep order")
+                try: await client.send_message(new, f"[media skipped: {m.id}]", reply_to=dst_tid, silent=True)
+                except Exception: pass
+            done += 1
+            if done % 25 == 0: log(f"  ...{done} messages reborn into the new home")
     finally:
+        shutil.rmtree(tmp, ignore_errors=True)
         await noforwards(vault, True)
-    log(f"✅ RESTORED into {new.title} — topics & sequence identical.")
+    log(f"✅ RESTORED {done} messages into {new.title} — brand-new fingerprints, exact order.")
 
 # ---------- setup & misc ----------
 async def setup(st):
@@ -203,9 +239,13 @@ async def main():
     if mode == "--setup":
         await setup(st)
     elif mode == "--sync":
-        for s, v in st["pairs"].items(): await sync_pair(int(s), v, st)
+        for s, v in list(st["pairs"].items()):
+            try: await sync_pair(int(s), v, st)
+            except Exception as e: log(f"  ! skipping pair {s}: {e}")
     elif mode == "--shield":
-        for v in st["pairs"].values(): await shield_pair(v)
+        for v in list(st["pairs"].values()):
+            try: await shield_pair(v)
+            except Exception as e: log(f"  ! skipping vault {v}: {e}")
     elif mode == "--restore":
         await restore(sys.argv[2], sys.argv[3])
     await save_state(st, mid)
