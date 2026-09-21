@@ -1,0 +1,26 @@
+name: phoenix
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch: {}
+concurrency:
+  group: phoenix
+  cancel-in-progress: false
+jobs:
+  phoenix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install telethon
+      - env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          TG_SESSION: ${{ secrets.TG_SESSION }}
+          SHIELD_BUDGET: "20400"
+        run: |
+          python phoenix.py --setup
+          python phoenix.py --sync
+          python phoenix.py --shield
