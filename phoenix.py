@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-PHOENIX v2.3 — immortal, order-perfect, copyright-shielded Telegram backups.
+PHOENIX v2.4 — immortal, order-perfect, copyright-shielded Telegram backups.
 Zero media ever stored on your device. Runs fully automated on GitHub Actions.
-v2.3: state marker fixed (no leading space), vaults deduplicated by name.
+v2.4: state-save can never crash; works with AND without forum topics.
 """
 import asyncio, json, os, random, shutil, subprocess, sys, tempfile, time
 from telethon import TelegramClient, functions
@@ -47,8 +47,11 @@ async def load_state():
 
 async def save_state(st, mid):
     txt = MARK + json.dumps(st, separators=(",", ":"))
-    if mid: await client.edit_message("me", mid, txt)
-    else:   await client.send_message("me", txt)
+    try:
+        if mid: await client.edit_message("me", mid, txt)
+        else:   await client.send_message("me", txt)
+    except Exception as e:
+        log(f"  (state save note: {e})")
 
 async def noforwards(peer, on):
     try: await retry(lambda: client(functions.channels.ToggleNoForwardsRequest(channel=peer, enabled=on)))
@@ -61,7 +64,11 @@ async def forum_on(peer):
 async def topics_map(peer):
     out, off = {}, 0
     while True:
-        r = await retry(lambda: client(functions.channels.GetForumTopicsRequest(channel=peer, limit=100, offset_topic=off)))
+        try:
+            r = await retry(lambda: client(functions.channels.GetForumTopicsRequest(channel=peer, limit=100, offset_topic=off)))
+        except Exception as e:
+            log(f"  (no forum topics in this chat, backing up as single ordered feed: {e})")
+            return out
         for t in r.topics: out[t.id] = t.title
         if len(r.topics) < 100: break
         off = r.topics[-1].id
